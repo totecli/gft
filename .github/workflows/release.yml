@@ -1,0 +1,105 @@
+name: release
+
+# A push of a tag that is the version of plugin.toml (1.1.0, without "v", as tote requires) builds
+# dist/plugin-gft.tar.gz and its .sha256, checks the archive with tote, and creates a DRAFT release
+# with both files. The maintainer reads the draft, adds the notes and publishes it by hand. Nothing
+# else triggers this workflow: no push to a branch, no pull request, no schedule.
+#
+# NOT RUN YET on GitHub: the repository was prepared locally and nothing was pushed. What is known
+# to work is tools/package.sh and the tote commands it calls, run by hand with the released tote
+# 1.1.0. Checked against that release: the names of its assets (tote_<version>_linux_amd64.tar.gz,
+# the checksums file and its .minisig) and the two minisign keys, which are the ones of the README
+# of tote. What can only be checked on the first real tag:
+#   - the commit pins of the actions, copied from the release workflow of tote;
+#   - gh release create without --title: the title of the draft must stay empty (check it).
+
+on:
+    push:
+        tags: ["[0-9]*.[0-9]*.[0-9]*"]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+jobs:
+    release:
+        name: Draft release
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: write
+        env:
+            # The tote that checks the package. It must know field.choices_from: 1.1.0 or later.
+            # Raise it by hand when a newer tote is released. Without a tote, nothing is published.
+            TOTE_VERSION: "1.1.0"
+            # Public minisign keys of tote, current then next (README of tote, section Install).
+            TOTE_MINISIGN_KEYS: "RWTTj50yYWk72oCPtVJZ8hrpENxKKpQHDtQl3l1JkOxauemhwepIFON3 RWS7eI0zAwZGD3nDouKjNMVgt3opeJ9Lf3K3RNRKeNYIV1Hm9L0UirQT"
+        steps:
+            # Same commit as the release workflow of tote (v7.0.1).
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+            - name: Check the tag
+              run: |
+                  re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+                  re+='(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+                  re+='(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+                  if ! [[ "$GITHUB_REF_NAME" =~ $re ]]; then
+                      echo "::error::$GITHUB_REF_NAME is not a version such as 1.1.0 or 1.2.0-beta.1 (no v)"
+                      exit 1
+                  fi
+                  version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin.toml | head -n 1)
+                  if [ "$version" != "$GITHUB_REF_NAME" ]; then
+                      echo "::error::the tag $GITHUB_REF_NAME is not the version $version of plugin.toml"
+                      exit 1
+                  fi
+                  if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+                      echo "::error::$GITHUB_REF_NAME does not point at a commit of master"
+                      exit 1
+                  fi
+            - name: Install minisign
+              run: sudo apt-get update && sudo apt-get install -y minisign
+            - name: Get tote
+              # Downloads the release of tote, checks the signature of its checksums file with the
+              # public keys above, then the archive against that file. A failure stops the job.
+              run: |
+                  base="https://github.com/totecli/tote/releases/download/v${TOTE_VERSION}"
+                  work="$RUNNER_TEMP/tote"
+                  mkdir -p "$work"
+                  cd "$work"
+                  archive="tote_${TOTE_VERSION}_linux_amd64.tar.gz"
+                  sums="tote_${TOTE_VERSION}_checksums.txt"
+                  for f in "$archive" "$sums" "$sums.minisig"; do
+                      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+                          --max-time 120 --output "$f" "$base/$f"
+                  done
+                  ok=no
+                  for key in $TOTE_MINISIGN_KEYS; do
+                      if minisign -V -H -P "$key" -m "$sums" >/dev/null 2>&1; then ok=yes; break; fi
+                  done
+                  if [ "$ok" != yes ]; then
+                      echo "::error::the signature of $sums is not valid for any known key"
+                      exit 1
+                  fi
+                  sha256sum -c --ignore-missing "$sums"
+                  tar -xzf "$archive" tote
+                  ./tote --version
+                  echo "TOTE_BIN=$work/tote" >> "$GITHUB_ENV"
+            - name: Build and check the package
+              run: tools/package.sh
+            - name: Create the draft release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  sum=$(cut -d' ' -f1 dist/plugin-gft.tar.gz.sha256)
+                  notes="SHA-256 of plugin-gft.tar.gz: $sum"$'\n\n'
+                  notes+="The checksum proves that the file is the one published here, not who published it."
+                  extra=()
+                  case "$GITHUB_REF_NAME" in *-*) extra+=(--prerelease) ;; esac
+                  gh release create "$GITHUB_REF_NAME" \
+                      dist/plugin-gft.tar.gz dist/plugin-gft.tar.gz.sha256 \
+                      --draft --verify-tag --notes "$notes" "${extra[@]}"
