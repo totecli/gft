@@ -1,0 +1,432 @@
+api = 1
+id = "gft"
+version = "1.1.0"
+tote = ">=1.1.0, <2"
+# field.choices_from: the suggestions of a text field (Ctrl+L). tote 1.0 does not have it and reports
+# this plugin as incompatible, not as invalid.
+requires_features = ["field.choices_from"]
+title = "gft"
+description = "GitHub releases and git stashes with gft 1.3 or later."
+homepage = "https://github.com/totecli/gft"
+license = "MIT"
+tier = "declarative"
+
+# What gft really writes and reads when this plugin drives it (gft 1.3, read from its script):
+#   fs:write:cwd   downloads (asset, sources) go to the working directory of tote, or to the download
+#                  folder when that setting is set (a folder outside the home directory is your own
+#                  authority: nothing here limits it, fs: is declared and not enforced by tote)
+#   fs:write:home  "install" copies the binary to ~/.local/bin (always --user, never /usr/local/bin);
+#                  the response cache is ~/.config/gft/cache; the download folder may be in the home
+#   fs:write:repo  "stash drop" and "stash clean" change the .git folder of the selected repository
+#   fs:write:tmp   downloads for "install" and the checksum file live in a temporary folder
+#   fs:read:cwd    gft looks at the files of the working directory before it writes (no overwrite)
+#   fs:read:home   gft reads its own cache, and "gh api" (used by gft for notes and tags when gh is
+#                  installed and logged in) reads the login of gh in ~/.config/gh
+#   fs:read:repo   "stash list" and "stash show" read the selected repository
+#   net:           github.com (pages, source archives), api.github.com (gh), codeload.github.com (the
+#                  redirect of a source archive) and *.githubusercontent.com (release assets)
+#   env:GITHUB_TOKEN  reaches every run of the plugin, stash actions included: tote cannot narrow it
+#                  per action. gft starts git, gh, curl and tar, and git runs the hooks of the
+#                  selected repository.
+# The suggestions (Ctrl+L) run gft without GITHUB_TOKEN and without any env variable of this plugin.
+permissions = [
+    "env:GITHUB_TOKEN",
+    "exec:gft",
+    "fs:read:cwd",
+    "fs:read:home",
+    "fs:read:repo",
+    "fs:write:cwd",
+    "fs:write:home",
+    "fs:write:repo",
+    "fs:write:tmp",
+    "host:open-url",
+    "host:read:repos",
+    "net:*.githubusercontent.com",
+    "net:api.github.com",
+    "net:codeload.github.com",
+    "net:github.com",
+]
+
+[[requires]]
+bin = "gft"
+hint = "Install gft 1.3 or later: see https://github.com/20syldev/gft"
+
+# ---- Settings. Environment variable of each: TOTE_PLUGIN_GFT_<SETTING> (upper case).
+# A bool setting reaches gft as --option=true or --option=false (the forms of gft 1.3).
+
+[[setting]]
+id = "prereleases"
+type = "bool"
+label = "Include pre-releases"
+description = "Let the latest release, the lists of releases and the downloads include pre-releases."
+default = false
+
+[[setting]]
+id = "checksum"
+type = "bool"
+label = "Verify checksums"
+description = "Check a download against the checksum file of its release: integrity, not authenticity. A release with no checksum file fails."
+default = false
+
+[[setting]]
+id = "refresh"
+type = "bool"
+label = "Skip the response cache"
+description = "Ask GitHub again instead of reusing answers up to 5 minutes old."
+default = false
+
+# No must_exist: a folder that vanished would silently send the downloads to the current directory.
+# gft itself refuses a missing folder, and expands a leading ~ of the --dir=<value> form.
+[[setting]]
+id = "download_dir"
+type = "path"
+label = "Download folder"
+description = "Where downloads go: an absolute path or ~/... Empty means the current directory, and so does any other value (tote ignores it). gft refuses a folder that does not exist."
+
+# ---- Item actions on a saved repository (Tab on the row). Greyed without a GitHub remote.
+
+[[item_action]]
+id = "release"
+target = "repo"
+label = "Show the latest release"
+run = ["gft", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+output = "pager"
+
+[[item_action]]
+id = "assets"
+target = "repo"
+label = "List the release assets"
+run = ["gft", "--assets", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+output = "pager"
+
+[[item_action]]
+id = "detect"
+target = "repo"
+label = "Find the asset for this machine"
+run = ["gft", "--detect", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+output = "pager"
+
+[[item_action]]
+id = "notes"
+target = "repo"
+label = "Show the release notes"
+run = ["gft", "--notes", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+output = "pager"
+
+[[item_action]]
+id = "compare"
+target = "repo"
+label = "Compare two releases"
+run = ["gft", "--no-cache={setting.refresh}", "--", "{repo.slug}", "{from}..{to}"]
+output = "pager"
+[[item_action.field]]
+id = "from"
+type = "text"
+label = "From tag"
+hint = "Ctrl+L lists the latest releases of the repository."
+required = true
+pattern = "^[A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+[[item_action.field]]
+id = "to"
+type = "text"
+label = "To tag"
+hint = "Ctrl+L lists the latest releases of the repository."
+required = true
+pattern = "^[A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+
+# A download goes to the download folder, or to the directory tote runs in: never into the repository.
+[[item_action]]
+id = "get"
+target = "repo"
+label = "Download a release asset"
+cwd = "{cwd}"
+run = ["gft", "--asset={asset}", "{overwrite?}", "--checksum={setting.checksum}", "--dir={setting.download_dir?}", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}", "{tag?}"]
+confirm = "Download {asset} of {repo.name}?"
+output = "terminal"
+[[item_action.field]]
+id = "tag"
+type = "text"
+label = "Tag (empty for the latest)"
+hint = "Ctrl+L lists the latest releases of the repository."
+pattern = "^([A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*)?$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}"]
+[[item_action.field]]
+id = "asset"
+type = "text"
+label = "Asset (exact name)"
+hint = "Ctrl+L lists the assets. The one for this machine comes first."
+required = true
+pattern = "^[A-Za-z0-9_][A-Za-z0-9._+=,@~-]{0,127}$"
+max_len = 128
+choices_from = ["gft", "--assets", "--detect", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{repo.slug}", "{tag?}"]
+[[item_action.field]]
+id = "overwrite"
+type = "bool"
+label = "Replace an existing file"
+flag = "--force"
+
+[[item_action]]
+id = "open"
+target = "repo"
+label = "Open the releases page"
+open = "https://github.com/{repo.slug}/releases"
+
+# Stash actions. gft works on the repository of its working directory, which is the selected
+# repository for an item action. The number of a stash comes from "List stashes".
+
+[[item_action]]
+id = "stash-list"
+target = "repo"
+label = "List stashes"
+key = "s"
+run = ["gft", "stash", "list"]
+output = "pager"
+
+[[item_action]]
+id = "stash-show"
+target = "repo"
+label = "Show a stash"
+run = ["gft", "stash", "show", "{n?}"]
+output = "pager"
+[[item_action.field]]
+id = "n"
+type = "text"
+label = "Stash number"
+default = "0"
+pattern = "^[0-9]{1,4}$"
+
+[[item_action]]
+id = "stash-drop"
+target = "repo"
+label = "Drop a stash"
+run = ["gft", "stash", "drop", "{n}", "--yes"]
+confirm = "Drop stash {n} of {repo.name}?"
+output = "pager"
+[[item_action.field]]
+id = "n"
+type = "text"
+label = "Stash number"
+required = true
+pattern = "^[0-9]{1,4}$"
+
+[[item_action]]
+id = "stash-clean"
+target = "repo"
+label = "Delete all stashes"
+run = ["gft", "stash", "clean", "--yes"]
+confirm = "Delete all stashes of {repo.name}?"
+output = "pager"
+
+# ---- Palette commands, for any repository. The slug defaults to the current saved repository.
+# gft reads its subcommands (stash, update, delete) only as its first argument, and every argv here
+# starts with an option, so a tag can never be taken for one. Every argv also ends its options with
+# "--", and the repository comes first after it. A tag cannot hold "..", "/" or a leading dash: the
+# range of "compare" is built from two such tags, and scoped tags such as @scope/pkg@1.0.0 are typed
+# by hand in gft itself.
+
+[[command]]
+id = "show"
+label = "Show a GitHub release"
+keywords = ["release", "assets", "notes"]
+run = ["gft", "{view?}", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+output = "pager"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+[[command.field]]
+id = "tag"
+type = "text"
+label = "Tag (empty for the latest)"
+hint = "Ctrl+L lists the latest releases of the repository."
+pattern = "^([A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*)?$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+[[command.field]]
+id = "view"
+type = "choice"
+label = "View"
+choices = ["", "--releases", "--assets", "--detect", "--notes"]
+
+[[command]]
+id = "version"
+label = "Show the latest version number"
+keywords = ["latest", "tag", "number"]
+run = ["gft", "-q", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+output = "pager"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+
+[[command]]
+id = "compare"
+label = "Compare two releases"
+keywords = ["diff", "changes", "range"]
+run = ["gft", "--no-cache={setting.refresh}", "--", "{slug}", "{from}..{to}"]
+output = "pager"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+[[command.field]]
+id = "from"
+type = "text"
+label = "From tag"
+hint = "Ctrl+L lists the latest releases of the repository."
+required = true
+pattern = "^[A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+[[command.field]]
+id = "to"
+type = "text"
+label = "To tag"
+hint = "Ctrl+L lists the latest releases of the repository."
+required = true
+pattern = "^[A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+
+[[command]]
+id = "open"
+label = "Open the releases page"
+open = "https://github.com/{slug}/releases"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+
+# --asset takes the exact name of an asset: no pattern, no menu. The file goes to the download
+# folder, or to the current directory when that setting is empty. gft never replaces a file unless
+# the field "Replace an existing file" adds --force.
+[[command]]
+id = "get"
+label = "Download a release asset"
+keywords = ["download", "asset", "file"]
+run = ["gft", "--asset={asset}", "{overwrite?}", "--checksum={setting.checksum}", "--dir={setting.download_dir?}", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+confirm = "Download {asset} of {slug}?"
+output = "terminal"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+[[command.field]]
+id = "tag"
+type = "text"
+label = "Tag (empty for the latest)"
+hint = "Ctrl+L lists the latest releases of the repository."
+pattern = "^([A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*)?$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+[[command.field]]
+id = "asset"
+type = "text"
+label = "Asset (exact name)"
+hint = "Ctrl+L lists the assets. The one for this machine comes first."
+required = true
+pattern = "^[A-Za-z0-9_][A-Za-z0-9._+=,@~-]{0,127}$"
+max_len = 128
+choices_from = ["gft", "--assets", "--detect", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+[[command.field]]
+id = "overwrite"
+type = "bool"
+label = "Replace an existing file"
+flag = "--force"
+
+# "--user" installs in ~/.local/bin and never in /usr/local/bin. The asset is optional: empty lets
+# gft pick the archive or binary for this machine. There is no --force here: gft replaces an
+# installed binary by itself, by a rename.
+[[command]]
+id = "install"
+label = "Install a release binary"
+keywords = ["binary", "install", "program"]
+run = ["gft", "--install", "--user", "--asset={asset?}", "--checksum={setting.checksum}", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+confirm = "Download {slug} and install its program in ~/.local/bin, replacing a program of the same name?"
+output = "terminal"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+[[command.field]]
+id = "tag"
+type = "text"
+label = "Tag (empty for the latest)"
+hint = "Ctrl+L lists the latest releases of the repository."
+pattern = "^([A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*)?$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+[[command.field]]
+id = "asset"
+type = "text"
+label = "Asset (empty to let gft choose)"
+hint = "Ctrl+L lists the assets. The one for this machine comes first."
+pattern = "^([A-Za-z0-9_][A-Za-z0-9._+=,@~-]{0,127})?$"
+max_len = 128
+choices_from = ["gft", "--assets", "--detect", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+
+# A source archive has no checksum file, so --checksum is not passed here (gft refuses the pair).
+[[command]]
+id = "source"
+label = "Download the source archive"
+keywords = ["zip", "tarball", "code"]
+run = ["gft", "--source={format}", "{overwrite?}", "--dir={setting.download_dir?}", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}", "{tag?}"]
+confirm = "Download the {format} sources of {slug}?"
+output = "terminal"
+[[command.field]]
+id = "slug"
+type = "text"
+label = "Repository"
+default = "{repo.slug}"
+required = true
+pattern = "^[A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+[[command.field]]
+id = "tag"
+type = "text"
+label = "Tag (empty for the latest)"
+hint = "Ctrl+L lists the latest releases of the repository."
+pattern = "^([A-Za-z0-9]+([._+@-][A-Za-z0-9]+)*)?$"
+max_len = 64
+choices_from = ["gft", "--releases", "--plain", "--pre={setting.prereleases}", "--no-cache={setting.refresh}", "--", "{slug}"]
+[[command.field]]
+id = "format"
+type = "choice"
+label = "Archive"
+choices = ["zip", "tar"]
+default = "zip"
+[[command.field]]
+id = "overwrite"
+type = "bool"
+label = "Replace an existing file"
+flag = "--force"
+
+# Removes the cache entries of gft (https_* files of its cache folder) and nothing else.
+[[command]]
+id = "clear-cache"
+label = "Clear the response cache"
+keywords = ["cache", "refresh", "reset"]
+run = ["gft", "--clear-cache"]
+output = "pager"
